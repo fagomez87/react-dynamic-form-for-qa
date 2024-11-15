@@ -166,11 +166,97 @@ interface DynamicFormProps {
   schema: Schema;
 }
 
+// Function to get dependencies from the schema
+const getDependencies = (schema: Schema): { [key: string]: string[] } => {
+  const dependencies: { [key: string]: string[] } = {};
 
+  Object.keys(schema).forEach((key) => {
+    const fieldSchema = schema[key];
+    if (fieldSchema.visibility) {
+      const [dependency] = fieldSchema.visibility;
+      if (!dependencies[key]) {
+        dependencies[key] = [];
+      }
+      dependencies[key].push(dependency);
+    }
+  });
+
+  return dependencies;
+};
+
+// Function to detect broken links in the schema
+const detectBrokenLinks = (schema: Schema): string[] => {
+  const missingDependencies: string[] = [];
+  const allKeys = Object.keys(schema);
+
+  Object.keys(schema).forEach((key) => {
+    const fieldSchema = schema[key];
+    if (fieldSchema.visibility) {
+      const [dependency] = fieldSchema.visibility;
+      if (!allKeys.includes(dependency)) {
+        missingDependencies.push(`Field "${key}" depends on missing field "${dependency}".`);
+      }
+    }
+  });
+
+  return missingDependencies;
+};
+
+// Function to perform topological sort
+const topologicalSort = (schema: Schema): string[] => {
+  const dependencies = getDependencies(schema);
+  const indegree: { [key: string]: number } = {};
+  const order: string[] = [];
+
+  // Initialize indegree
+  Object.keys(schema).forEach((key) => {
+    indegree[key] = 0;
+  });
+
+  // Calculate indegrees
+  Object.keys(dependencies).forEach((key) => {
+    dependencies[key].forEach((dependency) => {
+      indegree[dependency] = (indegree[dependency] || 0) + 1;
+    });
+  });
+
+  const queue: string[] = Object.keys(indegree).filter((key) => indegree[key] === 0);
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    order.push(current);
+
+    // Decrease indegree for neighbors
+    if (dependencies[current]) {
+      dependencies[current].forEach((dependency) => {
+        indegree[dependency]--;
+        if (indegree[dependency] === 0) {
+          queue.push(dependency);
+        }
+      });
+    }
+  }
+
+  // Check for cycles
+  if (order.length !== Object.keys(schema).length) {
+    throw new Error("Cycle detected in schema dependencies");
+  }
+
+  return order;
+};
 
 export const DynamicForm = ({ schema }: DynamicFormProps) => {
   const [formData, setFormData] = useState<{ [key: string]: any }>({});
   const [errors, setErrors] = useState<{ [key: string]: string[] }>({}); // Stage 3 solution
+
+  // Detect broken links
+  const brokenLinks = detectBrokenLinks(schema);
+  if (brokenLinks.length > 0) {
+    throw new Error(`Schema cannot be rendered due to missing dependencies: ${brokenLinks.join(", ")}`);
+  }
+
+  // Get sorted keys based on dependencies
+  const sortedKeys = topologicalSort(schema);
 
   const handleChange = (key: string, value: any) => {
     setFormData((prev) => {
@@ -207,7 +293,7 @@ export const DynamicForm = ({ schema }: DynamicFormProps) => {
     <form onSubmit={handleSubmit}>
       <Card>
         <CardContent className="flex flex-col gap-2 py-2">
-          {Object.keys(schema).map(
+          {sortedKeys.map(
             (key) =>
               shouldRenderField(key, schema[key]) && (
                 <FormField
