@@ -22,22 +22,30 @@ type FieldSchema =
       type: "string";
       multiline?: boolean;
       min?: number;
+      minLength: number, // Stage 2 solution
+      maxLength: number, // Stage 2 solution
       visibility?: VisibilityCondition;
       required?: boolean;
+      title?: string; // Stage 1 solution
+      description?: string; // Stage 1 solution
     }
-  | { type: "number"; visibility?: VisibilityCondition; required?: boolean }
-  | { type: "boolean"; visibility?: VisibilityCondition; required?: boolean }
+  | { type: "number"; visibility?: VisibilityCondition; required?: boolean; title?: string; description?: string, minValue: number, maxValue: number }
+  | { type: "boolean"; visibility?: VisibilityCondition; required?: boolean; title?: string; description?: string }
   | {
       type: "category";
       options: string[];
       visibility?: VisibilityCondition;
       required?: boolean;
+      title?: string; // Stage 1 solution
+      description?: string; // Stage 1 solution
     }
   | {
       type: "object";
       params: Schema;
       visibility?: VisibilityCondition;
       required?: boolean;
+      title?: string; // Stage 1 solution
+      description?: string; // Stage 1 solution
     };
 
 export type Schema = { [key: string]: FieldSchema };
@@ -47,7 +55,7 @@ interface FormFieldProps {
   fieldSchema: FieldSchema;
   value: any;
   onChange: (key: string, value: any) => void;
-  errors: { [key: string]: string };
+  errors: { [key: string]: string[] }; // Stage 3 solution
 }
 
 const FormField: React.FC<FormFieldProps> = ({
@@ -140,12 +148,14 @@ const FormField: React.FC<FormFieldProps> = ({
     }
   };
 
+  // Stage 1 solution, render title and description is exists
   return (
     <div>
       <label className="block font-semibold mb-2">
-        {fieldKey.split(".").pop()}
+        {fieldSchema.title || fieldKey.split('.').pop()} 
         {fieldSchema.required && <span className="text-red-500">*</span>}
       </label>
+      <p className="text-gray-600 mb-1">{fieldSchema.description}</p>
       {renderField()}
       {errors[fieldKey] && <p className="text-red-500">{errors[fieldKey]}</p>}
     </div>
@@ -156,9 +166,11 @@ interface DynamicFormProps {
   schema: Schema;
 }
 
+
+
 export const DynamicForm = ({ schema }: DynamicFormProps) => {
   const [formData, setFormData] = useState<{ [key: string]: any }>({});
-  const [errors, setErrors] = useState<{ [key: string]: string }>({});
+  const [errors, setErrors] = useState<{ [key: string]: string[] }>({}); // Stage 3 solution
 
   const handleChange = (key: string, value: any) => {
     setFormData((prev) => {
@@ -233,11 +245,21 @@ export const DynamicForm = ({ schema }: DynamicFormProps) => {
   );
 };
 
+// Stage 3 solution
+const errorMessages = {
+  required: (fieldKey: string) => `${fieldKey} is required.`,
+  minLength: (fieldKey: string, minLength: number) => `${fieldKey} must be at least ${minLength} characters long.`,
+  maxLength: (fieldKey: string, maxLength: number) => `${fieldKey} must not exceed ${maxLength} characters.`,
+  minValue: (fieldKey: string, minValue: number) => `${fieldKey} must be at least ${minValue}.`,
+  maxValue: (fieldKey: string, maxValue: number) => `${fieldKey} must not exceed ${maxValue}.`,
+  invalidType: (fieldKey: string) => `${fieldKey} has an invalid value.`,
+};
+
 const getErrors = (
   schema: Schema,
   values: { [key: string]: any }
-): { [key: string]: string } => {
-  const errors: { [key: string]: string } = {};
+): { [key: string]: string[] } => {
+  const errors: { [key: string]: string[] } = {};
 
   Object.keys(schema).forEach((key) => {
     const fieldSchema = schema[key];
@@ -255,8 +277,14 @@ const getErrors = (
       Object.keys(nestedErrors).forEach((nestedKey) => {
         errors[`${key}.${nestedKey}`] = nestedErrors[nestedKey];
       });
-    } else if (!validateField(fieldSchema, value, values)) {
-      errors[key] = `Invalid value for ${key}`;
+    } else { // Stage 3 solution
+      const error = validateField(fieldSchema, value, key, values)
+      if (error) {
+        if (!errors[key]) {
+          errors[key] = []
+        }
+        errors[key].push(error)
+      }
     }
   });
 
@@ -295,38 +323,45 @@ const evaluateCondition = (
 const validateField = (
   fieldSchema: FieldSchema,
   value: any,
+  fieldKey: string,
   values: Record<string, any>
-): boolean => {
+): string | null => {
   if (
     fieldSchema.visibility &&
     !evaluateCondition(fieldSchema.visibility, values)
   ) {
-    return true;
+    return null; // Field is not visible
   }
 
   if (
     fieldSchema.required &&
     (value === null || value === undefined || value === "")
   ) {
-    return false;
+    return errorMessages.required(fieldKey);
   }
 
-  switch (fieldSchema.type) {
+  switch (fieldSchema.type) { // Stage 3 solution
     case "string":
-      if (typeof value !== "string") return false;
-      if (fieldSchema.min && value.length < fieldSchema.min) return false;
-      return true;
+      if (typeof value !== "string") return errorMessages.invalidType(fieldKey);
+      if (fieldSchema.minLength && value.length < fieldSchema.minLength) return errorMessages.minLength(fieldKey, fieldSchema.minLength);
+      if (fieldSchema.maxLength && value.length > fieldSchema.maxLength) return errorMessages.maxLength(fieldKey, fieldSchema.maxLength);
+      return null;
     case "number":
-      return typeof value === "number";
+      if (typeof value !== "number") return errorMessages.invalidType(fieldKey);
+      if (fieldSchema.minValue !== undefined && value < fieldSchema.minValue) return errorMessages.minValue(fieldKey, fieldSchema.minValue);
+      if (fieldSchema.maxValue !== undefined && value > fieldSchema.maxValue) return errorMessages.maxValue(fieldKey, fieldSchema.maxValue);
+      return null;
     case "boolean":
-      return typeof value === "boolean";
+      if (typeof value !== "boolean") return errorMessages.invalidType(fieldKey);
+      return null
     case "category":
-      return fieldSchema.options.includes(value);
+      if (!fieldSchema.options.includes(value)) return errorMessages.invalidType(fieldKey);
+      return null;
     case "object":
-      if (typeof value !== "object" || value === null) return false;
-      return validateSchema(fieldSchema.params, value);
+      if (typeof value !== "object" || value === null) return errorMessages.invalidType(fieldKey);
+      return null;
     default:
-      return false;
+      return null;
   }
 };
 
@@ -338,6 +373,6 @@ const validateSchema = (
     const fieldSchema = schema[key];
     const value = values[key];
 
-    return validateField(fieldSchema, value, values);
+    return validateField(fieldSchema, value, key, values);
   });
 };
